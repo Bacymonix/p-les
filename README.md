@@ -95,6 +95,15 @@ Dans Supabase, **Authentication → URL Configuration** : mettez l'adresse GitHu
    - cliquer sur **Pôles…** pour donner à chacun ses pôles (Membre ou Responsable) ;
    - mettre le rôle **Bureau** aux membres du bureau.
 
+### 5. Reprendre ce qui a été saisi en démo
+
+1. Dans la démo, cliquez sur **Exporter mes données** (en haut), ce qui télécharge un fichier `.json`. Une sauvegarde existe déjà dans `sauvegardes/`.
+2. Dans le vrai site, en admin : **Gérer les pôles → Importer des données de la démo…**, puis choisissez le fichier.
+
+L'import reprend les pôles (estimations comprises), les objectifs, les contenus et les commentaires. Il ne reprend pas les comptes ni les équipes, puisque ce sont de vraies personnes à inviter. Les fichiers déposés en démo ne sont pas conservés : il faut les redéposer.
+
+> Le dossier `sauvegardes/` contient des données de l'asso (dont des adresses) : il est exclu de git et ne doit jamais être publié.
+
 ## Limites à connaître
 
 - **Taille des fichiers : 50 Mo maximum** par fichier, et 1 Go en tout sur l'offre gratuite de Supabase. Pour les vidéos lourdes (versions du film, vidéos de la com), déposez plutôt un **lien** Drive ou YouTube.
