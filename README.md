@@ -37,25 +37,43 @@ Un admin peut créer un pôle et lui donner l'une de ces dispositions, ou une di
 | Modifier / supprimer un contenu | non | **le sien uniquement** | tout dans son pôle | tout | tout |
 | Estimation /100 et objectifs de la semaine | non | lecture | **oui** | oui | oui |
 | Ajouter / retirer des membres d'un pôle | non | non | oui (simples membres de son pôle) | **non** | oui |
-| Nommer les responsables, valider les comptes, changer les rôles | non | non | non | non | **oui** |
-| Voir les e-mails des membres | non | non | non | non | **oui** |
+| Demander à rejoindre un pôle | oui | oui | oui | — | — |
+| Accepter les demandes, nommer les responsables, changer les rôles, réinitialiser un mot de passe | non | non | non | non | **oui** |
+| Voir les identifiants de connexion des membres | non | non | non | non | **oui** |
 
 - Ces règles sont appliquées **par la base de données elle-même** (Row Level Security de Supabase), fichiers compris. Même quelqu'un qui contournerait le site n'obtiendrait que ce que son rôle autorise.
 - Les fichiers sont dans un espace **privé** : chaque ouverture passe par un lien temporaire (1 h), délivré seulement aux personnes du pôle.
-- Un nouveau compte ne voit **rien** tant qu'un admin ne l'a pas validé **et** ajouté à des pôles. « Retirer l'accès » le retire aussi de tous ses pôles.
+- Un nouveau compte ne voit **rien** (à part le nom des pôles, pour pouvoir en demander) tant qu'un admin n'a pas accepté une de ses demandes. « Retirer l'accès » le retire aussi de tous ses pôles.
 - Une personne voit seulement les noms des gens de ses pôles, plus ceux du bureau. Un responsable voit aussi les noms des membres validés, pour pouvoir les ajouter à son pôle.
 - Il reste toujours au moins un admin : le dernier admin ne peut pas se retirer ce rôle.
 
-## Essayer tout de suite (mode démo)
+## Inscription et accès : comment ça marche
 
-Tant que `js/config.js` est vide, le site tourne en **mode démo** avec des données d'exemple. Les membres de la démo sont fictifs, et les données restent dans votre navigateur. Le menu **« Voir en tant que »** en haut de la page permet de se mettre à la place de l'admin, du bureau, d'un respo, d'un membre ou d'un compte non validé, pour vérifier ce que chacun voit.
+1. **Première ouverture** : tant qu'aucun compte n'existe, le site affiche une page « Crée le compte administrateur ». Elle n'apparaît qu'une fois.
+2. **Les membres** ouvrent le site, onglet **Créer un compte** : un **surnom** et un **mot de passe**, sans e-mail.
+3. Ils **choisissent les pôles** qu'ils veulent rejoindre. Tant que rien n'est validé, ils ne voient que le nom des pôles, aucun contenu.
+4. **L'admin attribue** : dans **Membres et demandes**, chaque demande s'accepte (✓) ou se refuse (✗). Accepter une demande valide le compte et ajoute la personne au pôle.
+5. Un membre déjà validé peut demander d'autres pôles avec **Rejoindre un pôle** dans le menu.
+6. **Rôles** : dans la même page, l'admin choisit le rôle de chacun (Admin, Bureau, Membre) et nomme les respos avec **Pôles…**. Admin et Bureau ont la vue d'ensemble de tous les pôles ; un membre ne voit que les siens.
+
+À savoir :
+- Le surnom sert d'identifiant : deux personnes ne peuvent pas avoir le même. Chacun peut changer son surnom affiché et son mot de passe dans **Mon profil**, mais se connecte toujours avec le surnom d'origine.
+- **Mot de passe oublié** : l'admin clique sur la clé à côté de la personne et lui donne un mot de passe provisoire.
+- Un compte créé avant ce système (avec un e-mail) se connecte en tapant son e-mail à la place du surnom.
+- N'importe qui ayant l'adresse du site peut créer un compte, mais un compte non validé ne voit rien. L'admin peut **supprimer** un compte inconnu.
+
+## Essayer sans risque (mode démo)
+
+Ajoutez `?demo` à l'adresse du site (par ex. `https://…/p-les/?demo`) : le site passe en **mode démo**, avec des données d'exemple qui restent dans votre navigateur et ne touchent jamais aux vraies données. Le menu **« Voir en tant que »** permet de se mettre à la place de l'admin, du bureau, d'un respo, d'un membre ou d'un compte non validé.
+
+Pour le lancer sur votre PC :
 
 ```bash
 cd C:\Users\baroc\asso-pilotage
 python -m http.server 8765
 ```
 
-Puis ouvrez http://localhost:8765. En démo, les fichiers que vous déposez disparaissent au rechargement de la page.
+Puis ouvrez http://localhost:8765/?demo. En démo, les fichiers déposés disparaissent au rechargement de la page.
 
 ## Mise en ligne (≈ 20 minutes, gratuit)
 
@@ -82,20 +100,20 @@ Puis ouvrez http://localhost:8765. En démo, les fichiers que vous déposez disp
    ```
 3. Dans le dépôt : **Settings → Pages → Deploy from a branch**, branche `main`, dossier `/ (root)`. L'adresse s'affiche après une minute.
 
-### 3. Relier les deux
+### 3. Régler Supabase
 
-Dans Supabase :
-- **Authentication → URL Configuration** : mettez l'adresse GitHub Pages dans **Site URL** et dans **Redirect URLs**.
-- **Authentication → Sign In / Providers → Email** : décochez **Confirm email**. Le site n'envoie aucun e-mail : la sécurité repose sur la validation de chaque compte par un admin.
+- **Authentication → Sign In / Providers → Email** : décochez **Confirm email**. C'est **obligatoire** : les membres s'inscrivent avec un surnom, sans e-mail, donc aucun e-mail de confirmation ne peut leur arriver.
+- **Authentication → URL Configuration** : mettez l'adresse GitHub Pages dans **Site URL**.
 
 ### 4. Premier lancement
 
-1. Créez votre compte sur le site. Le **premier inscrit devient admin**.
-2. Envoyez l'adresse aux membres. Chacun crée son compte.
-3. Dans **Membres et accès** :
-   - **Valider** chaque compte ;
-   - cliquer sur **Pôles…** pour donner à chacun ses pôles (Membre ou Responsable) ;
-   - mettre le rôle **Bureau** aux membres du bureau.
+1. Ouvrez le site : la page « Crée le compte administrateur » s'affiche. Choisissez votre surnom et votre mot de passe.
+2. Envoyez l'adresse aux membres. Chacun crée son compte et demande ses pôles.
+3. Dans **Membres et demandes**, acceptez les demandes, puis ajustez les rôles (Bureau, respos).
+
+### Mettre à jour une base déjà installée
+
+Si la base a été créée avant l'inscription par surnom : **SQL Editor → New query**, collez `supabase/migration-2.sql`, **Run**. Ce script n'efface rien et peut être relancé.
 
 ### 5. Reprendre ce qui a été saisi en démo
 
@@ -110,22 +128,20 @@ L'import reprend les pôles (estimations comprises), les objectifs, les contenus
 
 - **Taille des fichiers : 50 Mo maximum** par fichier, et 1 Go en tout sur l'offre gratuite de Supabase. Pour les vidéos lourdes (versions du film, vidéos de la com), déposez plutôt un **lien** Drive ou YouTube.
 - **Carte SOS** : les fonds de carte viennent d'OpenStreetMap. On place un appartement en cliquant sur la carte, et aucune adresse n'est envoyée à un service extérieur. Les adresses ne sont visibles que des membres du pôle SOS, du bureau et des admins.
-- **Pas d'e-mails** : le site n'en envoie aucun (le service intégré de Supabase n'écrit qu'à l'équipe du projet, environ 2 par heure). Conséquences :
-  - avant de valider un compte, vérifiez que vous connaissez la personne et son adresse ;
-  - **mot de passe oublié** : un admin le réinitialise dans Supabase (Authentication → Users → la personne → *Send password recovery* ne marchera pas sans SMTP ; supprimez plutôt le compte pour qu'elle se réinscrive, puis revalidez-la et redonnez-lui ses pôles).
-  - Pour réactiver les e-mails plus tard : branchez un SMTP (Authentication → Emails → SMTP, par ex. Brevo), puis recochez *Confirm email*.
+- **Pas d'e-mails** : le site n'en envoie aucun. Chaque compte reçoit un identifiant technique fabriqué à partir du surnom (`surnom@…`, réglé par `LOGIN_DOMAIN` dans `js/config.js`), auquel rien n'est jamais envoyé. Ne changez pas `LOGIN_DOMAIN` une fois des comptes créés.
+- **Police d'écriture** : elle est chargée depuis Google Fonts. Sans connexion à Google, le site utilise la police du système.
 - **Projet en pause** : sur l'offre gratuite, Supabase met en pause un projet inutilisé pendant 7 jours. Il suffit de le relancer depuis Supabase.
 
 ## Fichiers
 
 ```
 index.html            page unique
-styles.css            apparence générale (clair / sombre automatique, mobile)
-sections.css          jauges, tableau de bord, sections, carte
+styles.css            apparence (clair / sombre automatique, mobile)
 js/config.js          nom de l'asso + identifiants Supabase   ← à remplir
 js/templates.js       disposition de chaque pôle (sections)
 js/app.js             écrans
 js/data.js            accès aux données + mode démo (mêmes règles que la base)
 supabase/schema.sql   tables, droits par rôle, fichiers, temps réel   ← à lancer une fois
 supabase/seed.sql     les 11 pôles et leurs sections                  ← à lancer ensuite
+supabase/migration-2.sql   mise à jour d'une base déjà installée (surnoms, demandes de pôles)
 ```

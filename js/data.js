@@ -1,10 +1,11 @@
 // Couche d'accès aux données : Supabase en production, navigateur en mode démo.
 // En mode démo, les mêmes règles d'accès que la base (schema.sql) sont simulées ici,
 // pour pouvoir tester chaque rôle avec « Voir en tant que ».
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, LOGIN_DOMAIN } from './config.js';
 import { TEMPLATES, ASSO_POLES } from './templates.js';
 
-export const DEMO = !SUPABASE_URL || !SUPABASE_ANON_KEY;
+// Mode démo : config vide, ou adresse du site suivie de ?demo (pour essayer sans toucher aux vraies données).
+export const DEMO = !SUPABASE_URL || !SUPABASE_ANON_KEY || new URLSearchParams(location.search).has('demo');
 export const MAX_FILE_MB = 50;
 const SUPABASE_JS = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm';
 const BUCKET = 'pole-files';
@@ -25,11 +26,15 @@ function check({ data, error }) {
 
 function translate(msg = '') {
   const m = msg.toLowerCase();
-  if (m.includes('invalid login credentials')) return 'E-mail ou mot de passe incorrect.';
-  if (m.includes('email not confirmed')) return "Adresse e-mail pas encore confirmée : cliquez sur le lien reçu par e-mail.";
-  if (m.includes('user already registered')) return 'Un compte existe déjà avec cet e-mail.';
+  if (m.includes('invalid login credentials')) return 'Surnom ou mot de passe incorrect.';
+  if (m.includes('email not confirmed') || m.includes('error sending') || m.includes('not authorized'))
+    return "Inscriptions bloquées : l'admin doit décocher « Confirm email » dans Supabase (Authentication > Sign In / Providers > Email).";
+  if (m.includes('user already registered') || m.includes('already been registered')) return 'Ce surnom est déjà pris : choisis-en un autre.';
+  if (m.includes('email address') && m.includes('invalid')) return "Ce surnom n'est pas accepté : utilise des lettres et des chiffres.";
+  if (m.includes('signups not allowed') || m.includes('signup is disabled')) return 'Les inscriptions sont fermées pour le moment.';
+  if (m.includes('could not find the function') || m.includes('does not exist')) return "La base n'est pas à jour : l'admin doit lancer supabase/migration-2.sql.";
   if (m.includes('password should be at least')) return 'Le mot de passe doit faire au moins 6 caractères.';
-  if (m.includes('row-level security') || m.includes('permission denied') || m.includes('unauthorized')) return "Vous n'avez pas les droits pour cette action.";
+  if (m.includes('row-level security') || m.includes('permission denied') || m.includes('unauthorized')) return "Tu n'as pas les droits pour cette action.";
   if (m.includes('exceeded the maximum allowed size') || m.includes('payload too large')) return `Fichier trop lourd (${MAX_FILE_MB} Mo maximum) : déposez plutôt un lien (Drive, YouTube…).`;
   if (m.includes('duplicate key') && m.includes('pole_members')) return 'Cette personne est déjà dans le pôle.';
   if (m.includes('rate limit')) return 'Trop de tentatives, réessayez dans quelques minutes.';
@@ -48,17 +53,34 @@ export async function currentUser() {
 export function onAuth(cb) {
   if (DEMO) return;
   sb.auth.onAuthStateChange((event) => {
-    if (['SIGNED_IN', 'SIGNED_OUT', 'USER_UPDATED', 'PASSWORD_RECOVERY'].includes(event)) setTimeout(() => cb(event), 0);
+    if (['SIGNED_IN', 'SIGNED_OUT'].includes(event)) setTimeout(() => cb(event), 0);
   });
 }
 
-export async function signIn(email, password) { check(await sb.auth.signInWithPassword({ email, password })); }
-export async function signUp(email, password, fullName) {
-  const data = check(await sb.auth.signUp({ email, password, options: { data: { full_name: fullName }, emailRedirectTo: redirectUrl() } }));
-  return { needsConfirmation: !data.session };
+// Surnom -> identifiant technique. Un texte contenant « @ » est pris tel quel (ancien compte créé avec un e-mail).
+export function loginId(nick) {
+  const raw = (nick || '').trim();
+  if (raw.includes('@')) return raw.toLowerCase();
+  const slug = raw.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '');
+  return slug.length >= 2 ? `${slug}@${LOGIN_DOMAIN}` : '';
 }
-export async function resetPassword(email) { check(await sb.auth.resetPasswordForEmail(email, { redirectTo: redirectUrl() })); }
-export async function setNewPassword(password) { check(await sb.auth.updateUser({ password })); }
+export const nickOf = (email) => ((email || '').endsWith('@' + LOGIN_DOMAIN) ? email.slice(0, -LOGIN_DOMAIN.length - 1) : (email || ''));
+
+export async function signIn(nick, password) {
+  const email = loginId(nick);
+  if (!email) throw new Error('Indique ton surnom.');
+  check(await sb.auth.signInWithPassword({ email, password }));
+}
+export async function signUp(nick, password) {
+  const email = loginId(nick);
+  if (!email || nick.includes('@')) throw new Error("Choisis un surnom d'au moins 2 lettres ou chiffres, sans « @ ».");
+  const data = check(await sb.auth.signUp({ email, password, options: { data: { full_name: nick.trim() } } }));
+  if (!data.session) throw new Error(translate('email not confirmed'));
+}
+export async function changeMyPassword(password) {
+  if (DEMO) return;
+  check(await sb.auth.updateUser({ password }));
+}
 export async function signOut() { if (!DEMO) await sb.auth.signOut(); }
 
 // ---------- Lecture groupée (la base ne renvoie que ce que l'utilisateur a le droit de voir) ----------
@@ -68,7 +90,35 @@ export async function loadEverything() {
   const [profiles, poles, members, goals, items, comments] = await Promise.all(
     [q('profiles', 'full_name'), q('poles', 'position'), q('pole_members'), q('weekly_goals', 'position'), q('items', 'position'), q('comments')]
       .map(async (p) => check(await p)));
-  return { profiles, poles, members, goals, items, comments };
+  // Table ajoutée par migration-2.sql : si elle manque encore, le site marche sans les demandes.
+  const req = await q('join_requests');
+  return { profiles, poles, members, goals, items, comments, requests: req.error ? [] : req.data, migrated: !req.error };
+}
+
+// Vrai tant qu'aucun compte n'existe (première ouverture du site).
+export async function setupNeeded() {
+  if (DEMO) return false;
+  const { data, error } = await sb.rpc('setup_needed');
+  return error ? false : !!data;
+}
+
+// Noms et couleurs de tous les pôles, pour demander à en rejoindre.
+export async function poleDirectory() {
+  if (DEMO) return demo.db.poles.slice().sort((a, b) => a.position - b.position).map((p) => ({ id: p.id, name: p.name, color: p.color }));
+  return check(await sb.rpc('pole_directory'));
+}
+
+export async function acceptRequest(poleId, userId) {
+  if (DEMO) return demo.accept(poleId, userId);
+  check(await sb.rpc('accept_request', { p: poleId, u: userId }));
+}
+export async function adminResetPassword(userId, password) {
+  if (DEMO) { if (!rules.admin()) denied(); return; }
+  check(await sb.rpc('admin_reset_password', { target: userId, new_password: password }));
+}
+export async function adminDeleteUser(userId) {
+  if (DEMO) return demo.deleteUser(userId);
+  check(await sb.rpc('admin_delete_user', { target: userId }));
 }
 
 export async function getMyProfile() {
@@ -79,7 +129,7 @@ export async function getMyProfile() {
 }
 
 export async function adminEmails() {
-  if (DEMO) { if (!rules.admin()) denied(); return Object.fromEntries(demo.db.profiles.map((p) => [p.id, `${p.id}@exemple.fr`])); }
+  if (DEMO) { if (!rules.admin()) denied(); return Object.fromEntries(demo.db.profiles.map((p) => [p.id, `${p.id}@${LOGIN_DOMAIN}`])); }
   const rows = check(await sb.rpc('admin_member_emails'));
   return Object.fromEntries(rows.map((r) => [r.id, r.email]));
 }
@@ -144,7 +194,7 @@ export async function removeFile(path) {
 export function subscribe(onChange) {
   if (DEMO || channel) return;
   channel = sb.channel('pilotage');
-  for (const t of ['profiles', 'poles', 'pole_members', 'weekly_goals', 'items', 'comments']) {
+  for (const t of ['profiles', 'poles', 'pole_members', 'weekly_goals', 'items', 'comments', 'join_requests']) {
     channel.on('postgres_changes', { event: '*', schema: 'public', table: t }, onChange);
   }
   channel.subscribe();
@@ -157,7 +207,7 @@ export function setDemoUser(id) { demo.db.meId = id; demo.save(); }
 export function demoUsers() { return demo.clone(demo.db.profiles); }
 export function demoMembers() { return demo.clone(demo.db.pole_members); }
 
-function denied() { throw new Error("Vous n'avez pas les droits pour cette action."); }
+function denied() { throw new Error("Tu n'as pas les droits pour cette action."); }
 
 // Mêmes règles que schema.sql.
 const rules = {
@@ -181,6 +231,7 @@ const rules = {
     return this.db.pole_members.some((m) => m.user_id === id && mine.includes(m.pole_id));
   },
   canRead(table, r) {
+    if (table === 'join_requests') return r.user_id === this.db.meId || this.admin();
     if (table === 'profiles') return this.seeProfile(r.id);
     if (table === 'poles') return this.inPole(r.id);
     return this.inPole(r.pole_id);
@@ -192,6 +243,7 @@ const rules = {
       case 'weekly_goals': return this.manages(r.pole_id);
       case 'items': return this.canWrite(r.pole_id, r.section);
       case 'comments': return this.inPole(r.pole_id);
+      case 'join_requests': return r.user_id === this.db.meId && !this.db.pole_members.some((m) => m.pole_id === r.pole_id && m.user_id === r.user_id);
       default: return false;
     }
   },
@@ -216,19 +268,20 @@ const rules = {
       case 'weekly_goals': return this.manages(r.pole_id);
       case 'items': return this.manages(r.pole_id) || (r.created_by === this.db.meId && this.canWrite(r.pole_id, r.section));
       case 'comments': return r.author_id === this.db.meId || this.manages(r.pole_id);
+      case 'join_requests': return r.user_id === this.db.meId || this.admin();
       default: return false;
     }
   },
 };
 
 const matches = (r, match) => Object.entries(match).every(([k, v]) => r[k] === v);
-const TABLES = { profiles: 'profiles', poles: 'poles', members: 'pole_members', goals: 'weekly_goals', items: 'items', comments: 'comments' };
+const TABLES = { profiles: 'profiles', poles: 'poles', members: 'pole_members', goals: 'weekly_goals', items: 'items', comments: 'comments', requests: 'join_requests' };
 
 const demo = {
   KEY: 'pilotage-demo-v4',
   db: null,
   load() {
-    try { const s = localStorage.getItem(this.KEY); if (s) { this.db = JSON.parse(s); return; } } catch { /* stockage indisponible */ }
+    try { const s = localStorage.getItem(this.KEY); if (s) { this.db = JSON.parse(s); this.db.join_requests ||= []; return; } } catch { /* stockage indisponible */ }
     this.db = demoSeed(); this.save();
   },
   save() { try { localStorage.setItem(this.KEY, JSON.stringify(this.db)); } catch { /* ignoré */ } },
@@ -238,15 +291,19 @@ const demo = {
     const out = {};
     for (const [k, t] of Object.entries(TABLES)) out[k] = this.clone(this.db[t].filter((r) => rules.canRead(t, r)));
     out.poles.sort((a, b) => a.position - b.position);
+    out.migrated = true;
     return out;
   },
   insert(table, row) {
     const now = new Date().toISOString();
     const r = { id: crypto.randomUUID(), created_at: now, updated_at: now, ...row };
+    if (table === 'join_requests') r.user_id = this.db.meId;
     if (table === 'comments') { r.author_id = this.db.meId; r.pole_id = this.db.items.find((i) => i.id === r.item_id)?.pole_id; }
     else if (['weekly_goals', 'items'].includes(table)) r.created_by = this.db.meId;
     if (!rules.canInsert(table, r)) denied();
     if (table === 'pole_members' && this.db.pole_members.some((m) => m.pole_id === r.pole_id && m.user_id === r.user_id)) throw new Error('Cette personne est déjà dans le pôle.');
+    if (table === 'join_requests' && this.db.join_requests.some((m) => m.pole_id === r.pole_id && m.user_id === r.user_id)) return this.clone(r);
+    if (table === 'pole_members') this.db.join_requests = this.db.join_requests.filter((q) => !(q.pole_id === r.pole_id && q.user_id === r.user_id));
     this.db[table].push(r); this.save(); return this.clone(r);
   },
   update(table, match, patch) {
@@ -265,8 +322,22 @@ const demo = {
     const rows = this.db[table].filter((r) => matches(r, match));
     if (!rows.length || !rows.every((r) => rules.canDelete(table, r))) denied();
     this.db[table] = this.db[table].filter((r) => !matches(r, match));
-    if (table === 'poles') for (const t of ['pole_members', 'weekly_goals', 'items', 'comments']) this.db[t] = this.db[t].filter((r) => r.pole_id !== match.id);
+    if (table === 'poles') for (const t of ['pole_members', 'weekly_goals', 'items', 'comments', 'join_requests']) this.db[t] = this.db[t].filter((r) => r.pole_id !== match.id);
     if (table === 'items') this.db.comments = this.db.comments.filter((c) => c.item_id !== match.id);
+    this.save();
+  },
+  accept(poleId, userId) {
+    if (!rules.admin()) denied();
+    const u = this.db.profiles.find((p) => p.id === userId);
+    if (u) u.approved = true;
+    if (!this.db.pole_members.some((m) => m.pole_id === poleId && m.user_id === userId)) this.db.pole_members.push({ pole_id: poleId, user_id: userId, role: 'membre', created_at: new Date().toISOString() });
+    this.db.join_requests = this.db.join_requests.filter((q) => !(q.pole_id === poleId && q.user_id === userId));
+    this.save();
+  },
+  deleteUser(userId) {
+    if (!rules.admin() || userId === this.db.meId) denied();
+    this.db.profiles = this.db.profiles.filter((p) => p.id !== userId);
+    for (const t of ['pole_members', 'join_requests']) this.db[t] = this.db[t].filter((r) => r.user_id !== userId);
     this.save();
   },
 };
@@ -383,5 +454,7 @@ function demoSeed() {
     { id: 'c1', item_id: 'i2', pole_id: 'p-goodies', body: 'Je préfère celui-ci, plus lisible.', author_id: 'ines', created_at: ago(3) },
     { id: 'c2', item_id: 'i11', pole_id: 'p-rap', body: 'Bonne base, peut-être ralentir un peu le tempo.', author_id: 'tom', created_at: ago(5) },
   ];
-  return { meId: 'camille', profiles, poles, pole_members, weekly_goals, items, comments };
+  const R = (pole, user) => ({ pole_id: `p-${pole}`, user_id: user, created_at: ago(1) });
+  const join_requests = [R('com', 'alex'), R('rap', 'alex'), R('rap', 'nina')];
+  return { meId: 'camille', profiles, poles, pole_members, weekly_goals, items, comments, join_requests };
 }

@@ -7,7 +7,8 @@ const STALE_DAYS = 7;
 
 const state = {
   me: null, profiles: [], poles: [], members: [], goals: [], items: [], comments: [],
-  emails: {}, week: {}, openComments: new Set(), recovering: false,
+  requests: [], directory: [], migrated: true,
+  emails: {}, week: {}, openComments: new Set(),
 };
 const $app = document.getElementById('app');
 const $modal = document.getElementById('modal');
@@ -48,6 +49,27 @@ function untilDate(s) {
   return diff > 0 ? `dans ${diff} j` : `il y a ${-diff} j`;
 }
 
+const ICONS = {
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  users: '<circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0"/><path d="M16 4a4 4 0 0 1 0 8"/><path d="M22 21a7 7 0 0 0-5-6.7"/>',
+  sliders: '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/>',
+  chat: '<path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9"/><path d="m16 7 3 3"/>',
+  music: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+  file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
+  left: '<path d="m15 18-6-6 6-6"/>',
+  right: '<path d="m9 18 6-6-6-6"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+};
+const icon = (n) => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ''}</svg>`;
+
 // ---------- Droits (affichage seulement : la base applique les mêmes règles) ----------
 const role = () => (state.me?.approved ? state.me.role : null);
 const isAdmin = () => role() === 'admin';
@@ -75,39 +97,45 @@ function toast(msg, kind = 'ok') {
   clearTimeout(toast.t); toast.t = setTimeout(() => (el.className = ''), 3500);
 }
 
+const redraw = () => (state.me?.approved ? render() : renderJoin());
+
 async function run(fn, okMsg) {
-  try { await fn(); if (okMsg) toast(okMsg); await loadAll(); render(); return true; }
+  try { await fn(); if (okMsg) toast(okMsg); await loadAll(); redraw(); return true; }
   catch (e) { toast(e.message || 'Erreur inattendue.', 'err'); return false; }
 }
 
 // ---------- Démarrage et session ----------
 async function boot() {
   try { await api.init(); }
-  catch { $app.innerHTML = `<div class="boot">Impossible de charger le site. Vérifiez votre connexion internet.</div>`; return; }
-  api.onAuth((event) => {
-    if (event === 'PASSWORD_RECOVERY') { state.recovering = true; renderRecovery(); return; }
-    refreshSession();
-  });
+  catch { $app.innerHTML = `<div class="boot">Impossible de charger le site. Vérifie ta connexion internet.</div>`; return; }
+  api.onAuth(() => refreshSession());
   window.addEventListener('hashchange', () => { if (state.me?.approved) { render(); window.scrollTo(0, 0); } });
   await refreshSession();
 }
 
 async function refreshSession() {
-  if (state.recovering) return;
   const user = await api.currentUser();
-  if (!user) { state.me = null; renderAuth(); return; }
+  if (!user) { state.me = null; renderAuth((await api.setupNeeded()) ? 'setup' : 'login'); return; }
   state.me = await api.getMyProfile().catch(() => null);
-  if (!state.me?.approved) { renderPending(); return; }
+  if (!state.me) { await api.signOut(); renderAuth('login'); return; }
   await loadAll();
   let timer;
-  api.subscribe(() => { clearTimeout(timer); timer = setTimeout(async () => { await loadAll(); if (!$modal.open && !document.activeElement?.matches('input, textarea')) render(); }, 500); });
-  render();
+  api.subscribe(() => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      if (!state.me) return;
+      await loadAll();
+      if (!$modal.open && !document.activeElement?.matches('input, textarea')) redraw();
+    }, 500);
+  });
+  redraw();
 }
 
 async function loadAll() {
   const [all, me] = await Promise.all([api.loadEverything(), api.getMyProfile()]);
   Object.assign(state, all, { me });
   state.emails = isAdmin() ? await api.adminEmails().catch(() => ({})) : {};
+  state.directory = isStaff() ? [] : await api.poleDirectory().catch(() => []);
 }
 
 // ---------- Barre de démo : « voir en tant que » ----------
@@ -122,74 +150,88 @@ function demoBar() {
     return `${u.full_name} (${leads ? 'Responsable' : 'Membre'})`;
   };
   const meId = state.me?.id;
-  return `<div class="demo-bar">Mode démo (données d'exemple, dans ce navigateur uniquement). Voir en tant que
+  return `<div class="demo-bar"><strong>Mode démo</strong> · données d'exemple, dans ce navigateur uniquement · voir en tant que
     <select data-input="demo-user" aria-label="Voir en tant que">${users.map((u) => `<option value="${esc(u.id)}" ${u.id === meId ? 'selected' : ''}>${esc(label(u))}</option>`).join('')}</select>
     <a href="#" data-action="export-demo">Exporter mes données</a> · <a href="#" data-action="reset-demo">Réinitialiser</a></div>`;
 }
 
 // ---------- Écrans de connexion ----------
-function authShell(inner) {
+function authShell(inner, wide = false) {
   $app.innerHTML = `${demoBar()}
     <main class="auth">
-      <div class="auth-card">
+      <div class="auth-card ${wide ? 'wide' : ''}">
         <div class="brand big"><span class="logo"></span>${esc(APP_NAME)}</div>
         ${inner}
       </div>
     </main>`;
 }
 
-function renderAuth(mode = 'login', notice = '') {
-  const titles = { login: 'Connexion', signup: 'Créer un compte', reset: 'Mot de passe oublié' };
+// mode : 'login', 'signup', ou 'setup' (première ouverture : création du compte administrateur)
+function renderAuth(mode = 'login') {
+  const creating = mode !== 'login';
   authShell(`
-    <h1>${titles[mode]}</h1>
-    ${notice ? `<p class="notice">${esc(notice)}</p>` : ''}
+    ${mode === 'setup'
+      ? `<span class="pill">Première ouverture</span>
+         <h1>Crée le compte administrateur</h1>
+         <p class="lead">Cette page n'apparaît qu'une seule fois. Ce compte gère tout : les pôles, les rôles et les accès de chacun.</p>`
+      : `<div class="tabs" role="tablist">
+           <button type="button" role="tab" data-auth="login" class="${mode === 'login' ? 'on' : ''}">Connexion</button>
+           <button type="button" role="tab" data-auth="signup" class="${mode === 'signup' ? 'on' : ''}">Créer un compte</button>
+         </div>`}
     <form id="auth-form" class="form">
-      ${mode === 'signup' ? `<label>Prénom et nom<input name="name" required autocomplete="name"></label>` : ''}
-      <label>E-mail<input name="email" type="email" required autocomplete="email"></label>
-      ${mode !== 'reset' ? `<label>Mot de passe<input name="password" type="password" required minlength="6" autocomplete="${mode === 'signup' ? 'new-password' : 'current-password'}"></label>` : ''}
-      <button class="btn primary" type="submit">${{ login: 'Se connecter', signup: 'Créer mon compte', reset: 'Recevoir un lien' }[mode]}</button>
+      <label>${creating ? 'Ton surnom' : 'Surnom'}
+        <input name="nick" required minlength="2" maxlength="40" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="${creating ? 'Celui que les autres reconnaîtront' : ''}"></label>
+      <label>Mot de passe
+        <span class="pw"><input name="password" type="password" required minlength="6" autocomplete="${creating ? 'new-password' : 'current-password'}" placeholder="${creating ? '6 caractères minimum' : ''}">
+          <button type="button" class="pw-toggle" aria-label="Afficher le mot de passe">${icon('eye')}</button></span></label>
+      ${creating ? `<label>Encore une fois<input name="password2" type="password" required minlength="6" autocomplete="new-password"></label>` : ''}
+      <button class="btn primary big" type="submit">${{ login: 'Se connecter', signup: 'Créer mon compte', setup: 'Créer le compte administrateur' }[mode]}</button>
     </form>
-    <div class="auth-links">
-      ${mode !== 'login' ? `<a href="#" data-auth="login">J'ai déjà un compte</a>` : `<a href="#" data-auth="signup">Créer un compte</a><span class="muted small">Mot de passe oublié ? Demandez à un admin.</span>`}
-    </div>
-    ${mode === 'signup' ? `<p class="muted small">Après l'inscription, un admin de l'asso valide votre compte et vous ajoute à vos pôles.</p>` : ''}`);
-  $app.querySelectorAll('[data-auth]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); renderAuth(a.dataset.auth); }));
-  $app.querySelector('#auth-form').addEventListener('submit', async (e) => {
+    <p class="hint">${{
+      login: 'Mot de passe oublié ? Demande à un admin de t\'en donner un nouveau.',
+      signup: 'Pas besoin d\'e-mail. Ensuite tu choisis tes pôles, et un admin valide ta demande.',
+      setup: 'Retiens bien ce mot de passe : il n\'y a pas d\'e-mail de secours.',
+    }[mode]}</p>`);
+  $app.querySelectorAll('[data-auth]').forEach((b) => b.addEventListener('click', () => renderAuth(b.dataset.auth)));
+  const form = $app.querySelector('#auth-form');
+  form.querySelector('.pw-toggle').addEventListener('click', () => {
+    const show = form.password.type === 'password';
+    form.querySelectorAll('[name^=password]').forEach((i) => { i.type = show ? 'text' : 'password'; });
+  });
+  form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const f = Object.fromEntries(new FormData(e.target));
-    const btn = e.target.querySelector('button'); btn.disabled = true;
+    const f = Object.fromEntries(new FormData(form));
+    if (creating && f.password !== f.password2) return toast('Les deux mots de passe sont différents.', 'err');
+    const btn = form.querySelector('[type=submit]'); btn.disabled = true;
     try {
-      if (mode === 'login') { await api.signIn(f.email.trim(), f.password); await refreshSession(); }
-      else if (mode === 'signup') {
-        const { needsConfirmation } = await api.signUp(f.email.trim(), f.password, f.name.trim());
-        if (needsConfirmation) renderAuth('login', 'Compte créé ! Cliquez sur le lien reçu par e-mail pour confirmer votre adresse, puis connectez-vous.');
-        else await refreshSession();
-      } else { await api.resetPassword(f.email.trim()); renderAuth('login', 'Si un compte existe, un lien de réinitialisation vient de vous être envoyé.'); }
+      if (creating) await api.signUp(f.nick, f.password); else await api.signIn(f.nick, f.password);
+      await refreshSession();
     } catch (err) { toast(err.message, 'err'); btn.disabled = false; }
   });
+  form.nick.focus();
 }
 
-function renderRecovery() {
+// Compte créé mais pas encore validé : la personne choisit les pôles qu'elle veut rejoindre.
+function renderJoin() {
+  const mine = new Set(state.requests.filter((r) => r.user_id === state.me.id).map((r) => r.pole_id));
   authShell(`
-    <h1>Nouveau mot de passe</h1>
-    <form id="rec-form" class="form">
-      <label>Nouveau mot de passe<input name="password" type="password" required minlength="6" autocomplete="new-password"></label>
-      <button class="btn primary" type="submit">Enregistrer</button>
-    </form>`);
-  $app.querySelector('#rec-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    try { await api.setNewPassword(new FormData(e.target).get('password')); state.recovering = false; toast('Mot de passe modifié.'); await refreshSession(); }
-    catch (err) { toast(err.message, 'err'); }
-  });
+    <h1>Salut ${esc(state.me.full_name.split(' ')[0])} !</h1>
+    <p class="lead">Choisis les pôles que tu veux rejoindre. Un admin valide ta demande, et tu y as accès.</p>
+    ${pickGrid(mine)}
+    <p class="notice ${mine.size ? 'ok' : ''}">${mine.size
+      ? `Demande envoyée pour ${plural(mine.size, 'pôle')}. Tu auras accès dès qu'un admin aura validé : cette page se met à jour toute seule.`
+      : 'Aucune demande pour l\'instant : touche un pôle pour demander à le rejoindre.'}</p>
+    <div class="row"><button class="btn" data-action="refresh">Actualiser</button>${api.DEMO ? '' : '<button class="btn ghost" data-action="logout">Se déconnecter</button>'}</div>`, true);
 }
 
-function renderPending() {
-  authShell(`
-    <h1>Compte en attente</h1>
-    <p class="notice">Bonjour ${esc(state.me?.full_name || '')} ! Votre compte est créé. Un administrateur de l'association doit le valider et vous ajouter à vos pôles avant que vous puissiez voir quoi que ce soit.</p>
-    <div class="row"><button class="btn" id="retry">Vérifier à nouveau</button>${api.DEMO ? '' : '<button class="btn ghost" id="out">Se déconnecter</button>'}</div>`);
-  $app.querySelector('#retry').onclick = refreshSession;
-  $app.querySelector('#out')?.addEventListener('click', async () => { await api.signOut(); refreshSession(); });
+function pickGrid(mine) {
+  const member = new Set(state.members.filter((m) => m.user_id === state.me.id).map((m) => m.pole_id));
+  const list = state.directory.filter((p) => !member.has(p.id));
+  if (!state.migrated) return `<p class="notice">Cette fonction arrive : l'admin doit d'abord mettre la base à jour.</p>`;
+  if (!list.length) return `<p class="notice">${state.directory.length ? 'Tu es déjà dans tous les pôles.' : 'Aucun pôle n\'existe encore.'}</p>`;
+  return `<div class="pick-grid">${list.map((p) => `<button type="button" class="pick ${mine.has(p.id) ? 'on' : ''}" data-action="request-toggle" data-pole="${esc(p.id)}" style="--c:${esc(p.color)}" aria-pressed="${mine.has(p.id)}">
+      <span class="dot" style="background:${esc(p.color)}"></span><span class="pick-name">${esc(p.name)}</span>
+      <span class="pick-state">${mine.has(p.id) ? `${icon('check')} Demandé` : 'Rejoindre'}</span></button>`).join('')}</div>`;
 }
 
 // ---------- Mise en page principale ----------
@@ -205,32 +247,41 @@ function render() {
   else if (r.view === 'poles' && isAdmin()) main = viewManagePoles();
   else if (r.view === 'membres' && isAdmin()) main = viewMembers();
   else main = viewDashboard();
-  const pending = state.profiles.filter((p) => !p.approved).length;
   const cur = location.hash || '#/';
+  const todo = adminTodo();
+  const myPending = state.requests.filter((q) => q.user_id === state.me.id).length;
 
   $app.innerHTML = `
     ${demoBar()}
     <div class="layout">
       <aside class="side">
-        <a class="brand" href="#/"><span class="logo"></span>${esc(APP_NAME)}</a>
+        <a class="brand" href="#/"><span class="logo"></span><span>${esc(APP_NAME)}</span></a>
         <nav>
-          <a href="#/" class="${cur === '#/' || cur === '#' ? 'active' : ''}">${isStaff() ? 'Tableau de bord du bureau' : 'Mes pôles'}</a>
+          <a href="#/" class="${cur === '#/' || cur === '#' ? 'active' : ''}">${icon('grid')}<span>${isStaff() ? 'Vue d\'ensemble' : 'Mes pôles'}</span></a>
           <div class="nav-title">Pôles</div>
-          ${state.poles.map((p) => `<a href="#/pole/${esc(p.id)}" class="${cur === '#/pole/' + p.id ? 'active' : ''}"><span class="dot" style="background:${esc(p.color)}"></span>${esc(p.name)}${isLead(p.id) ? '<span class="tag">respo</span>' : ''}</a>`).join('') || '<span class="muted small nav-empty">Aucun pôle</span>'}
+          ${state.poles.map((p) => `<a href="#/pole/${esc(p.id)}" class="${cur === '#/pole/' + p.id ? 'active' : ''}"><span class="dot" style="background:${esc(p.color)}"></span><span>${esc(p.name)}</span>${isLead(p.id) ? '<span class="tag">respo</span>' : ''}</a>`).join('') || '<span class="nav-empty">Aucun pôle pour l\'instant</span>'}
+          ${isStaff() ? '' : `<button type="button" class="nav-join" data-action="join-open">${icon('plus')}<span>Rejoindre un pôle</span>${myPending ? `<span class="badge soft">${myPending} en attente</span>` : ''}</button>`}
           ${isAdmin() ? `<div class="nav-title">Administration</div>
-            <a href="#/poles" class="${cur === '#/poles' ? 'active' : ''}">Gérer les pôles</a>
-            <a href="#/membres" class="${cur === '#/membres' ? 'active' : ''}">Membres et accès ${pending ? `<span class="badge">${pending}</span>` : ''}</a>` : ''}
+            <a href="#/membres" class="${cur === '#/membres' ? 'active' : ''}">${icon('users')}<span>Membres et demandes</span>${todo ? `<span class="badge">${todo}</span>` : ''}</a>
+            <a href="#/poles" class="${cur === '#/poles' ? 'active' : ''}">${icon('sliders')}<span>Gérer les pôles</span></a>` : ''}
         </nav>
         <div class="me">
           <span class="avatar">${esc(initials(state.me.id))}</span>
-          <div><div class="me-name">${esc(state.me.full_name)}</div><div class="muted small">${esc(roleText())}</div></div>
-          <button class="btn ghost small" data-action="edit-me" title="Modifier mon nom">✎</button>
-          ${api.DEMO ? '' : `<button class="btn ghost small" data-action="logout">Déconnexion</button>`}
+          <div class="me-id"><div class="me-name">${esc(state.me.full_name)}</div><div class="me-role">${esc(roleText())}</div></div>
+          <button class="icon-btn" data-action="edit-me" title="Mon profil">${icon('edit')}</button>
+          ${api.DEMO ? '' : `<button class="icon-btn" data-action="logout" title="Se déconnecter">${icon('logout')}</button>`}
         </div>
       </aside>
       <main class="content">${main}</main>
     </div>`;
   hydrate();
+}
+
+// Nombre de choses qui attendent l'admin : demandes de pôles + comptes sans demande à valider.
+function adminTodo() {
+  if (!isAdmin()) return 0;
+  const withReq = new Set(state.requests.map((q) => q.user_id));
+  return state.requests.length + state.profiles.filter((p) => !p.approved && !withReq.has(p.id)).length;
 }
 
 // ---------- Composants ----------
@@ -271,8 +322,12 @@ function poleSummary(p) {
 function viewDashboard() {
   const poles = state.poles;
   if (!poles.length) {
-    return `<header class="page-head"><div><h1>Mes pôles</h1></div></header>
-      <div class="panel empty-big">Vous n'êtes encore dans aucun pôle. Demandez à un responsable de pôle ou à un administrateur de vous ajouter.</div>`;
+    const waiting = state.requests.filter((q) => q.user_id === state.me.id).length;
+    return `<header class="page-head hero"><div><p class="eyebrow">${esc(roleText())}</p><h1>Salut ${esc(state.me.full_name.split(' ')[0])}</h1></div></header>
+      <div class="panel empty-big">
+        <p>${isStaff() ? 'Aucun pôle n\'existe encore.' : waiting ? `Tu as ${plural(waiting, 'demande')} en attente de validation par un admin.` : 'Tu n\'es encore dans aucun pôle.'}</p>
+        ${isAdmin() ? '<a class="btn primary" href="#/poles">Créer les pôles</a>' : isStaff() ? '' : `<button class="btn primary" data-action="join-open">${icon('plus')} Rejoindre un pôle</button>`}
+      </div>`;
   }
   const gauged = poles.filter((p) => p.has_gauge);
   const withEst = gauged.filter((p) => p.estimate != null);
@@ -282,10 +337,13 @@ function viewDashboard() {
   const stale = gauged.filter(isStale);
 
   return `
-    <header class="page-head">
-      <div><h1>${isStaff() ? 'Tableau de bord du bureau' : 'Mes pôles'}</h1>
-      <p class="muted">Semaine du ${fmtDate(mondayOf())} · ${new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}</p></div>
+    <header class="page-head hero">
+      <div><p class="eyebrow">${esc(roleText())} · semaine du ${fmtDate(mondayOf())}</p>
+        <h1>Salut ${esc(state.me.full_name.split(' ')[0])}</h1>
+        <p class="muted">${isStaff() ? `Vue d'ensemble des ${poles.length} pôles de l'asso.` : `Voici ${poles.length > 1 ? `tes ${poles.length} pôles` : 'ton pôle'}.`}</p></div>
     </header>
+    ${adminTodo() ? `<a class="banner" href="#/membres">${icon('users')}<span><strong>${plural(adminTodo(), 'demande')} en attente</strong> : des membres attendent ta validation.</span><span class="banner-go">Voir ${icon('right')}</span></a>` : ''}
+    ${isAdmin() && !state.migrated ? `<div class="banner warn">${icon('sliders')}<span><strong>Base à mettre à jour</strong> : lance <code>supabase/migration-2.sql</code> dans Supabase (SQL Editor) pour activer les demandes de pôles.</span></div>` : ''}
     <section class="kpis">
       <div class="kpi"><div class="kpi-label">Avancement moyen estimé</div><div class="kpi-value">${avg ?? '—'}<small> / 100</small></div>${bar(avg ?? 0)}</div>
       <div class="kpi"><div class="kpi-label">Objectifs de la semaine</div><div class="kpi-value">${done}<small> / ${goals.length}</small></div>${bar(goals.length ? (done / goals.length) * 100 : 0, 'var(--ok)')}</div>
@@ -333,7 +391,7 @@ function viewPole(p) {
         <p class="muted">${esc(p.description)}</p>
         <p class="muted small">Responsable${leads.length > 1 ? 's' : ''} : ${esc(leads.map(nameOf).join(', ') || '—')}
           ${p.event_date ? ` · Date clé : <strong>${fmtDate(p.event_date, true)}</strong> (${untilDate(p.event_date)})` : ''}
-          · Votre rôle : ${isStaff() ? ROLE_LABEL[role()] : isLead(p.id) ? 'Responsable' : 'Membre'}</p>
+          · Ton rôle : ${isStaff() ? ROLE_LABEL[role()] : isLead(p.id) ? 'Responsable' : 'Membre'}</p>
       </div>
       ${mg ? `<button class="btn" data-action="edit-pole" data-id="${esc(p.id)}">Modifier le pôle</button>` : ''}
     </header>
@@ -360,17 +418,17 @@ function viewPole(p) {
         <div class="goals-head">
           <h2>Objectifs de la semaine</h2>
           <div class="week-nav">
-            <button class="btn ghost small" data-action="week" data-pole="${esc(p.id)}" data-delta="-1" aria-label="Semaine précédente">‹</button>
+            <button class="icon-btn" data-action="week" data-pole="${esc(p.id)}" data-delta="-1" title="Semaine précédente">${icon('left')}</button>
             <span class="small">${off === 0 ? 'Cette semaine' : `Sem. du ${fmtDate(mondayOf(off))}`}</span>
-            <button class="btn ghost small" data-action="week" data-pole="${esc(p.id)}" data-delta="1" aria-label="Semaine suivante">›</button>
+            <button class="icon-btn" data-action="week" data-pole="${esc(p.id)}" data-delta="1" title="Semaine suivante">${icon('right')}</button>
           </div>
         </div>
         ${gs.length ? `${bar((done / gs.length) * 100, 'var(--ok)')}<p class="muted small">${done} sur ${gs.length} atteint${done > 1 ? 's' : ''}</p>` : ''}
         <ul class="goals">
           ${gs.map((g) => `<li class="${g.done ? 'done' : ''}">
             <label><input type="checkbox" data-input="goal-done" data-id="${esc(g.id)}" ${g.done ? 'checked' : ''} ${mg ? '' : 'disabled'}><span>${esc(g.title)}</span></label>
-            ${mg ? `<button class="btn ghost small x" data-action="goal-delete" data-id="${esc(g.id)}" aria-label="Supprimer l'objectif">×</button>` : ''}
-          </li>`).join('') || `<li class="muted small">${mg ? 'Aucun objectif : ajoutez la to-do list de la semaine.' : 'Le responsable n\'a pas encore fixé d\'objectif.'}</li>`}
+            ${mg ? `<button class="icon-btn no" data-action="goal-delete" data-id="${esc(g.id)}" title="Supprimer l'objectif">${icon('x')}</button>` : ''}
+          </li>`).join('') || `<li class="muted small">${mg ? 'Aucun objectif : ajoute la to-do list de la semaine.' : 'Le responsable n\'a pas encore fixé d\'objectif.'}</li>`}
         </ul>
         ${mg ? `<form class="inline-add" data-form="goal" data-pole="${esc(p.id)}" data-week="${mondayOf(off)}">
           <input name="title" required maxlength="300" placeholder="Nouvel objectif…"><button class="btn small" type="submit">Ajouter</button></form>` : ''}
@@ -383,7 +441,7 @@ function viewPole(p) {
             <span class="avatar xs">${esc(initials(m.user_id))}</span><span class="grow">${esc(nameOf(m.user_id))}</span>
             ${m.role === 'responsable' ? '<span class="tag strong">respo</span>' : ''}
             ${isAdmin() ? `<button class="btn ghost small" data-action="member-role" data-pole="${esc(p.id)}" data-user="${esc(m.user_id)}" data-role="${m.role === 'responsable' ? 'membre' : 'responsable'}">${m.role === 'responsable' ? 'Retirer respo' : 'Nommer respo'}</button>` : ''}
-            ${(isAdmin() || (isLead(p.id) && m.role === 'membre')) && m.user_id !== state.me.id ? `<button class="btn ghost small x" data-action="member-remove" data-pole="${esc(p.id)}" data-user="${esc(m.user_id)}" aria-label="Retirer du pôle">×</button>` : ''}
+            ${(isAdmin() || (isLead(p.id) && m.role === 'membre')) && m.user_id !== state.me.id ? `<button class="icon-btn no" data-action="member-remove" data-pole="${esc(p.id)}" data-user="${esc(m.user_id)}" title="Retirer du pôle">${icon('x')}</button>` : ''}
           </li>`).join('') || '<li class="muted small">Personne pour l\'instant.</li>'}
         </ul>
         ${canManageMembers(p.id) && addable.length ? `<form class="inline-add" data-form="member-add" data-pole="${esc(p.id)}">
@@ -410,7 +468,7 @@ function renderSection(p, sec) {
       <h2>${esc(sec.title)} <span class="count">${its.length}</span></h2>
       ${sec.lead_only ? '<span class="muted small">Réservé au respo</span>' : ''}
       <span class="spacer"></span>
-      ${can ? `<button class="btn primary small" data-action="item-new" data-pole="${esc(p.id)}" data-section="${esc(sec.key)}">+ ${addLabel}</button>` : ''}
+      ${can ? `<button class="btn primary small" data-action="item-new" data-pole="${esc(p.id)}" data-section="${esc(sec.key)}">${icon('plus')} ${addLabel}</button>` : ''}
     </div>
     ${body}
   </section>`;
@@ -419,8 +477,8 @@ function renderSection(p, sec) {
 function itemActions(it, sec) {
   if (!canEditItem(it, sec)) return '';
   return `<span class="item-actions">
-    <button class="btn ghost small" data-action="item-edit" data-id="${esc(it.id)}" title="Modifier">✎</button>
-    <button class="btn ghost small x" data-action="item-delete" data-id="${esc(it.id)}" title="Supprimer">×</button></span>`;
+    <button class="icon-btn" data-action="item-edit" data-id="${esc(it.id)}" title="Modifier">${icon('edit')}</button>
+    <button class="icon-btn no" data-action="item-delete" data-id="${esc(it.id)}" title="Supprimer">${icon('trash')}</button></span>`;
 }
 
 const byline = (it) => `<span class="muted small">${esc(firstName(it.created_by))} · ${fmtDate(it.created_at)}</span>`;
@@ -430,11 +488,11 @@ function commentsBlock(it, sec) {
   const cs = state.comments.filter((c) => c.item_id === it.id).sort((a, b) => a.created_at.localeCompare(b.created_at));
   const open = state.openComments.has(it.id);
   return `<div class="comments">
-    <button class="btn ghost small" data-action="comments-toggle" data-id="${esc(it.id)}">💬 ${cs.length ? plural(cs.length, 'commentaire') : 'Commenter'}</button>
+    <button class="btn ghost small" data-action="comments-toggle" data-id="${esc(it.id)}">${icon('chat')} ${cs.length ? plural(cs.length, 'commentaire') : 'Commenter'}</button>
     ${open ? `<ul class="comment-list">${cs.map((c) => `<li><strong>${esc(firstName(c.author_id))}</strong> <span class="muted small">${fmtDate(c.created_at)}</span>
-        ${c.author_id === state.me.id || manages(it.pole_id) ? `<button class="btn ghost small x" data-action="comment-delete" data-id="${esc(c.id)}" aria-label="Supprimer le commentaire">×</button>` : ''}
+        ${c.author_id === state.me.id || manages(it.pole_id) ? `<button class="icon-btn no" data-action="comment-delete" data-id="${esc(c.id)}" title="Supprimer le commentaire">${icon('x')}</button>` : ''}
         <div class="comment-body">${esc(c.body)}</div></li>`).join('')}</ul>
-      <form class="inline-add" data-form="comment" data-item="${esc(it.id)}"><input name="body" required maxlength="2000" placeholder="Votre commentaire…"><button class="btn small" type="submit">Envoyer</button></form>` : ''}
+      <form class="inline-add" data-form="comment" data-item="${esc(it.id)}"><input name="body" required maxlength="2000" placeholder="Ton commentaire…"><button class="btn small" type="submit">Envoyer</button></form>` : ''}
   </div>`;
 }
 
@@ -444,15 +502,15 @@ function preview(it, { compact = false } = {}) {
   if (it.file_path) {
     if (t.startsWith('image/')) return `<a class="pv pv-img" data-path="${esc(it.file_path)}" data-attr="href" target="_blank" rel="noopener"><img data-path="${esc(it.file_path)}" alt="${esc(it.data.title || it.file_name)}"></a>`;
     if (t.startsWith('video/')) return `<video class="pv" controls preload="metadata" data-path="${esc(it.file_path)}"></video>`;
-    if (t.startsWith('audio/')) return `<div class="pv pv-audio"><span class="file-ico">🎵</span><audio controls preload="none" data-path="${esc(it.file_path)}"></audio></div>`;
-    const ico = t === 'application/pdf' ? '📄' : '📎';
+    if (t.startsWith('audio/')) return `<div class="pv pv-audio"><span class="file-ico">${icon('music')}</span><audio controls preload="none" data-path="${esc(it.file_path)}"></audio></div>`;
+    const ico = icon('file');
     return `<div class="pv pv-file"><span class="file-ico">${ico}</span><span class="fname">${esc(it.file_name)}</span>
       ${t === 'application/pdf' && !compact ? `<button class="btn small" data-action="pdf-preview" data-path="${esc(it.file_path)}" data-name="${esc(it.file_name)}">Aperçu</button>` : ''}
       <a class="btn small" data-path="${esc(it.file_path)}" data-attr="href" download="${esc(it.file_name)}" target="_blank" rel="noopener">Ouvrir</a></div>`;
   }
   if (it.link_url) {
     let host = it.link_url; try { host = new URL(it.link_url).hostname.replace(/^www\./, ''); } catch { /* lien brut */ }
-    return `<a class="pv pv-link" href="${esc(safeUrl(it.link_url))}" target="_blank" rel="noopener noreferrer"><span class="file-ico">🔗</span><span>${esc(host)}</span></a>`;
+    return `<a class="pv pv-link" href="${esc(safeUrl(it.link_url))}" target="_blank" rel="noopener noreferrer"><span class="file-ico">${icon('link')}</span><span>${esc(host)}</span></a>`;
   }
   if (it.data.text) return `<div class="pv pv-text">${esc(it.data.text)}</div>`;
   return '';
@@ -630,7 +688,7 @@ function viewManagePoles() {
     <header class="page-head"><div><h1>Gérer les pôles</h1><p class="muted">Créer, renommer, choisir la disposition et la jauge de chaque pôle.</p></div>
       <div class="row">
         <label class="btn" title="Reprendre les pôles, estimations, objectifs et contenus saisis en mode démo">Importer des données de la démo…<input type="file" accept=".json,application/json" data-input="import-demo" hidden></label>
-        <button class="btn primary" data-action="new-pole">+ Nouveau pôle</button>
+        <button class="btn primary" data-action="new-pole">${icon('plus')} Nouveau pôle</button>
       </div></header>
     <section class="panel">
       ${state.poles.length ? `<table class="table"><thead><tr><th>Pôle</th><th>Sections</th><th>Jauge</th><th>Responsables</th><th>Membres</th><th></th></tr></thead><tbody>
@@ -646,27 +704,59 @@ function viewManagePoles() {
 }
 
 function viewMembers() {
-  const pending = state.profiles.filter((p) => !p.approved);
-  const members = state.profiles.filter((p) => p.approved);
-  const polesOf = (uid) => state.members.filter((m) => m.user_id === uid)
-    .map((m) => `<span class="tag ${m.role === 'responsable' ? 'strong' : ''}">${esc(pole(m.pole_id)?.name)}${m.role === 'responsable' ? ' · respo' : ''}</span>`).join(' ');
+  const reqOf = (uid) => state.requests.filter((q) => q.user_id === uid && pole(q.pole_id));
+  const waiting = state.profiles.filter((p) => !p.approved || reqOf(p.id).length)
+    .sort((a, b) => Number(a.approved) - Number(b.approved) || a.full_name.localeCompare(b.full_name));
+  const members = state.profiles.filter((p) => p.approved).sort((a, b) => a.full_name.localeCompare(b.full_name));
+  const nick = (id) => { const e = api.nickOf(state.emails[id] || ''); return e ? `<span class="muted small">${e.includes('@') ? esc(e) : '@' + esc(e)}</span>` : ''; };
+  const polesOf = (uid) => state.members.filter((m) => m.user_id === uid && pole(m.pole_id))
+    .map((m) => `<span class="chip" style="--c:${esc(pole(m.pole_id).color)}">${esc(pole(m.pole_id).name)}${m.role === 'responsable' ? ' · respo' : ''}</span>`).join('');
+
+  const reqCard = (p) => {
+    const rs = reqOf(p.id);
+    return `<article class="req-card">
+      <div class="req-head">
+        <span class="avatar">${esc(initials(p.id))}</span>
+        <div class="grow"><strong>${esc(p.full_name)}</strong> ${nick(p.id)}<div class="small ${p.approved ? 'muted' : 'new'}">${p.approved ? 'Déjà membre, demande un pôle de plus' : 'Nouveau compte, pas encore validé'}</div></div>
+        ${rs.length > 1 ? `<button class="btn small primary" data-action="req-accept-all" data-user="${esc(p.id)}">${icon('check')} Tout accepter</button>` : ''}
+        ${!p.approved && !rs.length ? `<button class="btn small primary" data-action="approve" data-id="${esc(p.id)}">Valider sans pôle</button>` : ''}
+        ${!p.approved ? `<button class="btn small danger" data-action="user-delete" data-id="${esc(p.id)}">Supprimer</button>` : ''}
+      </div>
+      <div class="req-poles">${rs.map((q) => `<span class="req-chip" style="--c:${esc(pole(q.pole_id).color)}">
+          <span class="dot" style="background:${esc(pole(q.pole_id).color)}"></span>${esc(pole(q.pole_id).name)}
+          <button class="icon-btn ok" data-action="req-accept" data-pole="${esc(q.pole_id)}" data-user="${esc(p.id)}" title="Accepter">${icon('check')}</button>
+          <button class="icon-btn no" data-action="req-refuse" data-pole="${esc(q.pole_id)}" data-user="${esc(p.id)}" title="Refuser">${icon('x')}</button></span>`).join('')
+        || '<span class="muted small">N\'a encore demandé aucun pôle.</span>'}</div>
+    </article>`;
+  };
+
   const row = (p) => `<tr>
-    <td><span class="avatar xs">${esc(initials(p.id))}</span> <strong>${esc(p.full_name)}</strong>${p.id === state.me.id ? ' <span class="muted small">(vous)</span>' : ''}</td>
-    <td class="muted small">${esc(state.emails[p.id] || '')}</td>
-    <td>${!p.approved ? '<span class="late-pill">En attente</span>' : p.id === state.me.id ? ROLE_LABEL[p.role]
-      : `<select data-input="global-role" data-id="${esc(p.id)}" aria-label="Rôle">${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${k === p.role ? 'selected' : ''}>${v}</option>`).join('')}</select>`}</td>
-    <td>${p.approved ? (['admin', 'bureau'].includes(p.role) ? '<span class="muted small">Tous les pôles</span>' : polesOf(p.id) || '<span class="muted small">Aucun pôle : ne voit rien</span>') : ''}</td>
-    <td class="actions">${!p.approved
-      ? `<button class="btn small primary" data-action="approve" data-id="${esc(p.id)}">Valider</button>`
-      : `<button class="btn small" data-action="member-poles" data-id="${esc(p.id)}">Pôles…</button>
-         ${p.id === state.me.id ? '' : `<button class="btn small danger" data-action="revoke" data-id="${esc(p.id)}">Retirer l'accès</button>`}`}</td>
+    <td><div class="who-cell"><span class="avatar xs">${esc(initials(p.id))}</span><div><strong>${esc(p.full_name)}</strong>${p.id === state.me.id ? ' <span class="muted small">(toi)</span>' : ''}<div>${nick(p.id)}</div></div></div></td>
+    <td>${p.id === state.me.id ? `<span class="tag strong">${ROLE_LABEL[p.role]}</span>`
+      : `<select data-input="global-role" data-id="${esc(p.id)}" aria-label="Rôle de ${esc(p.full_name)}">${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${k === p.role ? 'selected' : ''}>${v}</option>`).join('')}</select>`}</td>
+    <td><div class="chips">${['admin', 'bureau'].includes(p.role) ? '<span class="muted small">Tous les pôles (vue d\'ensemble)</span>' : polesOf(p.id) || '<span class="muted small">Aucun pôle : ne voit rien</span>'}</div></td>
+    <td class="actions">
+      <button class="btn small" data-action="member-poles" data-id="${esc(p.id)}">Pôles…</button>
+      ${p.id === state.me.id ? '' : `<button class="icon-btn" data-action="pw-reset" data-id="${esc(p.id)}" title="Donner un nouveau mot de passe">${icon('key')}</button>
+        <button class="icon-btn no" data-action="revoke" data-id="${esc(p.id)}" title="Retirer l'accès">${icon('x')}</button>`}</td>
   </tr>`;
+
   return `
-    <header class="page-head"><div><h1>Membres et accès</h1>
-      <p class="muted">Admin : tout, y compris les accès · Bureau : voit et modifie tous les pôles · Membre : ne voit que ses pôles (responsable ou membre). Les e-mails ne sont visibles que des admins.</p></div></header>
-    ${pending.length ? `<h2>En attente de validation <span class="count">${pending.length}</span></h2><section class="panel"><table class="table"><tbody>${pending.map(row).join('')}</tbody></table></section>` : ''}
+    <header class="page-head"><div><h1>Membres et demandes</h1>
+      <p class="muted">Chacun demande ses pôles, tu attribues. Tu peux aussi ajuster le rôle de chaque personne.</p></div></header>
+
+    <h2>Demandes en attente <span class="count">${waiting.length}</span></h2>
+    ${waiting.length ? `<section class="req-list">${waiting.map(reqCard).join('')}</section>` : '<p class="empty">Rien à valider pour l\'instant.</p>'}
+
+    <h2>Rôles</h2>
+    <section class="role-grid">
+      <div class="role-card"><strong>Admin</strong><p>Voit tout, modifie tout, gère les comptes, les rôles et les pôles.</p></div>
+      <div class="role-card"><strong>Bureau</strong><p>Vue d'ensemble de tous les pôles, peut tout modifier. Ne gère pas les accès.</p></div>
+      <div class="role-card"><strong>Membre</strong><p>Ne voit que ses pôles. « Respo » d'un pôle : gère sa jauge, ses objectifs et son équipe.</p></div>
+    </section>
+
     <h2>Membres <span class="count">${members.length}</span></h2>
-    <section class="panel"><table class="table"><thead><tr><th>Nom</th><th>E-mail</th><th>Rôle</th><th>Pôles</th><th></th></tr></thead><tbody>${members.map(row).join('')}</tbody></table></section>`;
+    <section class="panel tight"><table class="table"><thead><tr><th>Nom</th><th>Rôle</th><th>Pôles</th><th></th></tr></thead><tbody>${members.map(row).join('')}</tbody></table></section>`;
 }
 
 // ---------- Fenêtres de saisie ----------
@@ -699,7 +789,7 @@ function options(items, selected, empty) {
 }
 
 const fileInput = (label, accept, it) => `<label>${label}<input type="file" name="file" ${accept ? `accept="${accept}"` : ''}>
-  <span class="muted small">${it?.file_path ? `Actuel : ${esc(it.file_name)} (laisser vide pour le garder)` : `${api.MAX_FILE_MB} Mo maximum ; pour une vidéo lourde, mettez plutôt un lien.`}</span></label>`;
+  <span class="muted small">${it?.file_path ? `Actuel : ${esc(it.file_name)} (laisser vide pour le garder)` : `${api.MAX_FILE_MB} Mo maximum ; pour une vidéo lourde, mets plutôt un lien.`}</span></label>`;
 
 function itemForm(p, sec, it) {
   const isNew = !it;
@@ -772,7 +862,7 @@ function itemForm(p, sec, it) {
       fields = `<label>Nom de l'appartement<input name="name" required maxlength="120" value="${esc(d.name || '')}" placeholder="ex. Appart 1 (cuisine)"></label>
         <label>Adresse (visible des seuls membres du pôle)<input name="address" maxlength="200" value="${esc(d.address || '')}"></label>
         <label>Rôles (une ligne par personne : « Prénom : rôle »)<textarea name="roles" rows="4">${esc((d.roles || []).map((r) => `${r.person} : ${r.role}`).join('\n'))}</textarea></label>
-        <div><span class="lbl">Emplacement : cliquez sur la carte</span><div class="map map-pick" id="pick-map"></div>
+        <div><span class="lbl">Emplacement : clique sur la carte</span><div class="map map-pick" id="pick-map"></div>
           <input type="hidden" name="lat" value="${d.lat ?? ''}"><input type="hidden" name="lng" value="${d.lng ?? ''}"></div>`;
       break;
   }
@@ -785,9 +875,9 @@ function itemForm(p, sec, it) {
       try {
         const row = { data: buildData(sec, v), link_url: null };
         if (sec.type === 'files') {
-          if (v.mode === 'link') { if (!v.link_url) throw new Error('Indiquez le lien.'); row.link_url = v.link_url; }
-          if (v.mode === 'text' && !v.text.trim()) throw new Error('Écrivez le texte.');
-          if (v.mode === 'file' && !file && !it?.file_path) throw new Error('Choisissez un fichier.');
+          if (v.mode === 'link') { if (!v.link_url) throw new Error('Indique le lien.'); row.link_url = v.link_url; }
+          if (v.mode === 'text' && !v.text.trim()) throw new Error('Écris le texte.');
+          if (v.mode === 'file' && !file && !it?.file_path) throw new Error('Choisis un fichier.');
           if (v.mode !== 'file') Object.assign(row, { file_path: null, file_name: null, file_type: null, file_size: null });
           if (v.mode !== 'text') row.data.text = '';
         }
@@ -888,7 +978,7 @@ function memberPolesForm(uid) {
   const cur = (pid) => state.members.find((m) => m.pole_id === pid && m.user_id === uid)?.role || '';
   openModal(`
     <h2>Pôles de ${esc(nameOf(uid))}</h2>
-    <p class="muted small">Un membre ne voit que les pôles cochés ici. Le responsable gère l'estimation, les objectifs et l'équipe du pôle.</p>
+    <p class="muted small">Cette personne ne verra que les pôles choisis ici. Un respo gère la jauge, les objectifs et l'équipe de son pôle.</p>
     <div class="pole-access">${state.poles.map((p) => `<label class="row-between"><span><span class="dot" style="background:${esc(p.color)}"></span> ${esc(p.name)}</span>
       <select name="${esc(p.id)}">${options([['membre', 'Membre'], ['responsable', 'Responsable']], cur(p.id), 'Pas d\'accès')}</select></label>`).join('')}</div>
     ${modalButtons(false)}`,
@@ -908,9 +998,38 @@ function memberPolesForm(uid) {
 
 function meForm() {
   openModal(`<h2>Mon profil</h2>
-    <label>Prénom et nom<input name="full_name" required maxlength="80" value="${esc(state.me.full_name)}"></label>
+    <label>Surnom affiché<input name="full_name" required maxlength="80" value="${esc(state.me.full_name)}"></label>
+    ${api.DEMO ? '' : `<label>Nouveau mot de passe (laisser vide pour ne pas changer)<input name="password" type="password" minlength="6" autocomplete="new-password"></label>
+    <p class="muted small">Tu te connectes toujours avec le surnom choisi à l'inscription, même si tu changes le surnom affiché.</p>`}
     ${modalButtons(false)}`,
-  (form) => run(() => api.update('profiles', { id: state.me.id }, { full_name: new FormData(form).get('full_name').trim() }), 'Profil enregistré.'));
+  (form) => {
+    const v = Object.fromEntries(new FormData(form));
+    return run(async () => {
+      await api.update('profiles', { id: state.me.id }, { full_name: v.full_name.trim() });
+      if (v.password) await api.changeMyPassword(v.password);
+    }, v.password ? 'Profil et mot de passe enregistrés.' : 'Profil enregistré.');
+  });
+}
+
+function joinModal() {
+  const mine = new Set(state.requests.filter((q) => q.user_id === state.me.id).map((q) => q.pole_id));
+  $modal.innerHTML = `<form method="dialog" class="form modal-form">
+    <h2>Rejoindre un pôle</h2>
+    <p class="muted small">Touche un pôle pour demander à le rejoindre. Un admin valide, puis le pôle apparaît dans ton menu.</p>
+    ${pickGrid(mine)}
+    <div class="modal-actions"><span class="spacer"></span><button class="btn primary" value="cancel">Terminé</button></div></form>`;
+  if (!$modal.open) $modal.showModal();
+}
+
+function passwordResetForm(uid) {
+  openModal(`<h2>Nouveau mot de passe pour ${esc(nameOf(uid))}</h2>
+    <p class="muted small">À utiliser quand quelqu'un a oublié le sien. Donne-lui ce mot de passe : il pourra le changer ensuite dans « Mon profil ».</p>
+    <label>Mot de passe provisoire<input name="password" required minlength="6" autocomplete="off" value="${Math.random().toString(36).slice(2, 10)}"></label>
+    ${modalButtons(false)}`,
+  async (form) => {
+    try { await api.adminResetPassword(uid, new FormData(form).get('password')); toast('Mot de passe changé : transmets-le-lui.'); return true; }
+    catch (e) { toast(e.message, 'err'); return false; }
+  });
 }
 
 async function pdfPreview(path, name) {
@@ -959,7 +1078,7 @@ async function importDemo(file) {
       const who = authorName(c.author_id);
       await api.insert('comments', { item_id: itemIds[c.item_id], body: who ? `${who} : ${c.body}` : c.body });
     }
-    toast(`Import terminé.${lost ? ` ${lost} fichier(s) déposé(s) en démo n'ont pas pu suivre : redéposez-les.` : ''}`);
+    toast(`Import terminé.${lost ? ` ${lost} fichier(s) déposé(s) en démo n'ont pas pu suivre : redépose-les.` : ''}`);
   } catch (e) { toast(`Import interrompu : ${e.message}`, 'err'); }
   await loadAll(); render();
 }
@@ -974,16 +1093,36 @@ document.addEventListener('click', async (e) => {
   const secOf = (it) => pole(it.pole_id)?.layout.find((s) => s.key === it.section);
   switch (action) {
     case 'reset-demo':
-      if (!confirm('Réinitialiser la démo ? Tout ce que vous avez saisi en démo sera effacé (pensez à « Exporter mes données » avant).')) return;
+      if (!confirm('Réinitialiser la démo ? Tout ce que tu as saisi en démo sera effacé (pense à « Exporter mes données » avant).')) return;
       api.resetDemo(); return refreshSession();
     case 'export-demo': {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([api.exportDemo()], { type: 'application/json' }));
       a.download = `pilotage-demo-${today()}.json`;
       document.body.append(a); a.click(); a.remove();
-      return toast('Fichier exporté : importez-le ensuite dans le vrai site (Gérer les pôles).');
+      return toast('Fichier exporté : importe-le ensuite dans le vrai site (Gérer les pôles).');
     }
     case 'logout': await api.signOut(); state.me = null; location.hash = ''; return refreshSession();
+    case 'refresh': await loadAll(); return redraw();
+    case 'join-open': return joinModal();
+    case 'request-toggle': {
+      const pid = el.dataset.pole;
+      const has = state.requests.some((q) => q.pole_id === pid && q.user_id === state.me.id);
+      await run(() => (has ? api.remove('join_requests', { pole_id: pid, user_id: state.me.id }) : api.insert('join_requests', { pole_id: pid, user_id: state.me.id })),
+        has ? 'Demande annulée.' : 'Demande envoyée.');
+      if ($modal.open) joinModal();
+      return;
+    }
+    case 'req-accept': return run(() => api.acceptRequest(el.dataset.pole, el.dataset.user), `${nameOf(el.dataset.user)} rejoint ${pole(el.dataset.pole)?.name}.`);
+    case 'req-accept-all': {
+      const list = state.requests.filter((q) => q.user_id === el.dataset.user);
+      return run(async () => { for (const q of list) await api.acceptRequest(q.pole_id, q.user_id); }, `${plural(list.length, 'pôle')} attribué${list.length > 1 ? 's' : ''} à ${nameOf(el.dataset.user)}.`);
+    }
+    case 'req-refuse': return run(() => api.remove('join_requests', { pole_id: el.dataset.pole, user_id: el.dataset.user }), 'Demande refusée.');
+    case 'pw-reset': return passwordResetForm(id);
+    case 'user-delete':
+      if (!confirm(`Supprimer définitivement le compte de ${nameOf(id)} ?`)) return;
+      return run(() => api.adminDeleteUser(id), 'Compte supprimé.');
     case 'edit-me': return meForm();
     case 'new-pole': return poleForm(null);
     case 'edit-pole': return poleForm(pole(id));
@@ -1005,9 +1144,9 @@ document.addEventListener('click', async (e) => {
     case 'comments-toggle': state.openComments.has(id) ? state.openComments.delete(id) : state.openComments.add(id); return render();
     case 'comment-delete': return run(() => api.remove('comments', { id }), 'Commentaire supprimé.');
     case 'pdf-preview': return pdfPreview(el.dataset.path, el.dataset.name);
-    case 'approve': return run(() => api.update('profiles', { id }, { approved: true }), 'Compte validé. Ajoutez-le maintenant à ses pôles.');
+    case 'approve': return run(() => api.update('profiles', { id }, { approved: true }), 'Compte validé.');
     case 'revoke':
-      if (!confirm(`Retirer l'accès de ${nameOf(id)} ? Il ne verra plus rien et sera retiré de tous ses pôles.`)) return;
+      if (!confirm(`Retirer l'accès de ${nameOf(id)} ? Cette personne ne verra plus rien et sera retirée de tous ses pôles.`)) return;
       return run(() => api.update('profiles', { id }, { approved: false, role: 'membre' }), 'Accès retiré.');
     case 'member-poles': return memberPolesForm(id);
   }
@@ -1036,7 +1175,7 @@ document.addEventListener('change', async (e) => {
   const key = t.dataset?.input;
   if (key === 'goal-done') return run(() => api.update('weekly_goals', { id: t.dataset.id }, { done: t.checked }));
   if (key === 'global-role') {
-    if (!confirm(`Donner le rôle « ${ROLE_LABEL[t.value]} » à ${nameOf(t.dataset.id)} ?${t.value !== 'membre' ? ' Il verra alors tous les pôles.' : ''}`)) { render(); return; }
+    if (!confirm(`Donner le rôle « ${ROLE_LABEL[t.value]} » à ${nameOf(t.dataset.id)} ?${t.value !== 'membre' ? ' Cette personne verra alors tous les pôles.' : ' Elle ne verra plus que ses pôles.'}`)) { render(); return; }
     return run(() => api.update('profiles', { id: t.dataset.id }, { role: t.value }), 'Rôle modifié.');
   }
   if (key === 'demo-user') { api.setDemoUser(t.value); location.hash = '#/'; return refreshSession(); }
