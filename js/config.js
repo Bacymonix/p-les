@@ -7,5 +7,5 @@
 // données d'exemple stockées dans votre navigateur uniquement, sans connexion.
 
 export const APP_NAME = "Pilotage de l'asso";
-export const SUPABASE_URL = "";
-export const SUPABASE_ANON_KEY = "";
+export const SUPABASE_URL = "https://pxpaajcuilqfubucnkry.supabase.co";
+export const SUPABASE_ANON_KEY = "sb_publishable_UAVTF-456T_dZpP8y2WNKg_mqjbt_8h";
