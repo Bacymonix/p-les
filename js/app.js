@@ -124,7 +124,7 @@ function demoBar() {
   const meId = state.me?.id;
   return `<div class="demo-bar">Mode démo (données d'exemple, dans ce navigateur uniquement). Voir en tant que
     <select data-input="demo-user" aria-label="Voir en tant que">${users.map((u) => `<option value="${esc(u.id)}" ${u.id === meId ? 'selected' : ''}>${esc(label(u))}</option>`).join('')}</select>
-    <a href="#" data-action="reset-demo">Réinitialiser</a></div>`;
+    <a href="#" data-action="export-demo">Exporter mes données</a> · <a href="#" data-action="reset-demo">Réinitialiser</a></div>`;
 }
 
 // ---------- Écrans de connexion ----------
@@ -627,7 +627,10 @@ function loadLeaflet() {
 function viewManagePoles() {
   return `
     <header class="page-head"><div><h1>Gérer les pôles</h1><p class="muted">Créer, renommer, choisir la disposition et la jauge de chaque pôle.</p></div>
-      <button class="btn primary" data-action="new-pole">+ Nouveau pôle</button></header>
+      <div class="row">
+        <label class="btn" title="Reprendre les pôles, estimations, objectifs et contenus saisis en mode démo">Importer des données de la démo…<input type="file" accept=".json,application/json" data-input="import-demo" hidden></label>
+        <button class="btn primary" data-action="new-pole">+ Nouveau pôle</button>
+      </div></header>
     <section class="panel">
       ${state.poles.length ? `<table class="table"><thead><tr><th>Pôle</th><th>Sections</th><th>Jauge</th><th>Responsables</th><th>Membres</th><th></th></tr></thead><tbody>
       ${state.poles.map((p) => `<tr>
@@ -916,6 +919,50 @@ async function pdfPreview(path, name) {
   $modal.showModal();
 }
 
+// ---------- Import des données saisies en mode démo ----------
+// Reprend les pôles (fiche, disposition, estimation), les objectifs, les contenus et les commentaires.
+// Les comptes et les équipes ne sont pas repris : ce sont de vraies personnes à inviter.
+// Les fichiers déposés en démo n'existent que le temps de la page : seuls les liens, textes et images d'exemple suivent.
+async function importDemo(file) {
+  let db;
+  try { db = JSON.parse(await file.text()); } catch { return toast('Fichier illisible.', 'err'); }
+  if (db.format !== 'pilotage-demo' || !Array.isArray(db.poles)) return toast("Ce fichier n'est pas un export de la démo.", 'err');
+  const nItems = (db.items || []).length;
+  if (!confirm(`Importer ${db.poles.length} pôles, ${(db.weekly_goals || []).length} objectifs et ${nItems} contenus ?\nLes pôles qui existent déjà (même nom) seront mis à jour ; les contenus seront ajoutés.`)) return;
+  const authorName = (id) => (db.profiles || []).find((p) => p.id === id)?.full_name?.split(' ')[0];
+  let lost = 0;
+  try {
+    const poleIds = {};
+    for (const p of db.poles) {
+      const row = { name: p.name, description: p.description || '', color: p.color, position: p.position, event_date: p.event_date || null,
+        has_gauge: !!p.has_gauge, layout: p.layout || [], estimate: p.estimate ?? null, estimate_note: p.estimate_note || '' };
+      const existing = state.poles.find((x) => x.name.trim().toLowerCase() === p.name.trim().toLowerCase());
+      if (existing) { await api.update('poles', { id: existing.id }, row); poleIds[p.id] = existing.id; }
+      else poleIds[p.id] = (await api.insert('poles', row)).id;
+    }
+    for (const g of db.weekly_goals || []) {
+      if (!poleIds[g.pole_id]) continue;
+      await api.insert('weekly_goals', { pole_id: poleIds[g.pole_id], week_start: g.week_start, title: g.title, done: !!g.done, position: g.position || 0 });
+    }
+    const itemIds = {};
+    for (const it of db.items || []) {
+      if (!poleIds[it.pole_id]) continue;
+      const keepFile = it.file_path?.startsWith('data:');
+      if (it.file_path && !keepFile) lost++;
+      const row = { pole_id: poleIds[it.pole_id], section: it.section, data: it.data || {}, link_url: it.link_url || null, position: it.position || 0 };
+      if (keepFile) Object.assign(row, { file_path: it.file_path, file_name: it.file_name, file_type: it.file_type, file_size: it.file_size });
+      itemIds[it.id] = (await api.insert('items', row)).id;
+    }
+    for (const c of db.comments || []) {
+      if (!itemIds[c.item_id]) continue;
+      const who = authorName(c.author_id);
+      await api.insert('comments', { item_id: itemIds[c.item_id], body: who ? `${who} : ${c.body}` : c.body });
+    }
+    toast(`Import terminé.${lost ? ` ${lost} fichier(s) déposé(s) en démo n'ont pas pu suivre : redéposez-les.` : ''}`);
+  } catch (e) { toast(`Import interrompu : ${e.message}`, 'err'); }
+  await loadAll(); render();
+}
+
 // ---------- Événements ----------
 document.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-action]');
@@ -925,7 +972,16 @@ document.addEventListener('click', async (e) => {
   const item = () => state.items.find((i) => i.id === id);
   const secOf = (it) => pole(it.pole_id)?.layout.find((s) => s.key === it.section);
   switch (action) {
-    case 'reset-demo': api.resetDemo(); return refreshSession();
+    case 'reset-demo':
+      if (!confirm('Réinitialiser la démo ? Tout ce que vous avez saisi en démo sera effacé (pensez à « Exporter mes données » avant).')) return;
+      api.resetDemo(); return refreshSession();
+    case 'export-demo': {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([api.exportDemo()], { type: 'application/json' }));
+      a.download = `pilotage-demo-${today()}.json`;
+      document.body.append(a); a.click(); a.remove();
+      return toast('Fichier exporté : importez-le ensuite dans le vrai site (Gérer les pôles).');
+    }
     case 'logout': await api.signOut(); state.me = null; location.hash = ''; return refreshSession();
     case 'edit-me': return meForm();
     case 'new-pole': return poleForm(null);
@@ -983,6 +1039,7 @@ document.addEventListener('change', async (e) => {
     return run(() => api.update('profiles', { id: t.dataset.id }, { role: t.value }), 'Rôle modifié.');
   }
   if (key === 'demo-user') { api.setDemoUser(t.value); location.hash = '#/'; return refreshSession(); }
+  if (key === 'import-demo' && t.files[0]) { const f = t.files[0]; t.value = ''; return importDemo(f); }
 });
 
 document.addEventListener('input', (e) => {

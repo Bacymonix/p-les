@@ -152,6 +152,7 @@ export function subscribe(onChange) {
 
 // ---------- Mode démo ----------
 export function resetDemo() { demo.reset(); }
+export function exportDemo() { return JSON.stringify({ format: 'pilotage-demo', version: 1, exported_at: new Date().toISOString(), ...demo.db }, null, 2); }
 export function setDemoUser(id) { demo.db.meId = id; demo.save(); }
 export function demoUsers() { return demo.clone(demo.db.profiles); }
 export function demoMembers() { return demo.clone(demo.db.pole_members); }
