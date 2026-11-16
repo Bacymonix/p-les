@@ -84,11 +84,13 @@ Puis ouvrez http://localhost:8765. En démo, les fichiers que vous déposez disp
 
 ### 3. Relier les deux
 
-Dans Supabase, **Authentication → URL Configuration** : mettez l'adresse GitHub Pages dans **Site URL** et dans **Redirect URLs**. Sans cela, les liens de confirmation d'e-mail et de mot de passe oublié ne marchent pas.
+Dans Supabase :
+- **Authentication → URL Configuration** : mettez l'adresse GitHub Pages dans **Site URL** et dans **Redirect URLs**.
+- **Authentication → Sign In / Providers → Email** : décochez **Confirm email**. Le site n'envoie aucun e-mail : la sécurité repose sur la validation de chaque compte par un admin.
 
 ### 4. Premier lancement
 
-1. Créez votre compte sur le site et confirmez l'e-mail. Le **premier inscrit devient admin**.
+1. Créez votre compte sur le site. Le **premier inscrit devient admin**.
 2. Envoyez l'adresse aux membres. Chacun crée son compte.
 3. Dans **Membres et accès** :
    - **Valider** chaque compte ;
@@ -108,7 +110,10 @@ L'import reprend les pôles (estimations comprises), les objectifs, les contenus
 
 - **Taille des fichiers : 50 Mo maximum** par fichier, et 1 Go en tout sur l'offre gratuite de Supabase. Pour les vidéos lourdes (versions du film, vidéos de la com), déposez plutôt un **lien** Drive ou YouTube.
 - **Carte SOS** : les fonds de carte viennent d'OpenStreetMap. On place un appartement en cliquant sur la carte, et aucune adresse n'est envoyée à un service extérieur. Les adresses ne sont visibles que des membres du pôle SOS, du bureau et des admins.
-- **E-mails** : le service d'e-mail intégré de Supabase n'envoie que quelques e-mails par heure. Si beaucoup de gens s'inscrivent le même jour, configurez un SMTP (Authentication → Emails → SMTP, par ex. Brevo).
+- **Pas d'e-mails** : le site n'en envoie aucun (le service intégré de Supabase n'écrit qu'à l'équipe du projet, environ 2 par heure). Conséquences :
+  - avant de valider un compte, vérifiez que vous connaissez la personne et son adresse ;
+  - **mot de passe oublié** : un admin le réinitialise dans Supabase (Authentication → Users → la personne → *Send password recovery* ne marchera pas sans SMTP ; supprimez plutôt le compte pour qu'elle se réinscrive, puis revalidez-la et redonnez-lui ses pôles).
+  - Pour réactiver les e-mails plus tard : branchez un SMTP (Authentication → Emails → SMTP, par ex. Brevo), puis recochez *Confirm email*.
 - **Projet en pause** : sur l'offre gratuite, Supabase met en pause un projet inutilisé pendant 7 jours. Il suffit de le relancer depuis Supabase.
 
 ## Fichiers

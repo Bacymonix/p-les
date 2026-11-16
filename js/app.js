@@ -150,8 +150,9 @@ function renderAuth(mode = 'login', notice = '') {
       <button class="btn primary" type="submit">${{ login: 'Se connecter', signup: 'Créer mon compte', reset: 'Recevoir un lien' }[mode]}</button>
     </form>
     <div class="auth-links">
-      ${mode !== 'login' ? `<a href="#" data-auth="login">J'ai déjà un compte</a>` : `<a href="#" data-auth="signup">Créer un compte</a><a href="#" data-auth="reset">Mot de passe oublié ?</a>`}
-    </div>`);
+      ${mode !== 'login' ? `<a href="#" data-auth="login">J'ai déjà un compte</a>` : `<a href="#" data-auth="signup">Créer un compte</a><span class="muted small">Mot de passe oublié ? Demandez à un admin.</span>`}
+    </div>
+    ${mode === 'signup' ? `<p class="muted small">Après l'inscription, un admin de l'asso valide votre compte et vous ajoute à vos pôles.</p>` : ''}`);
   $app.querySelectorAll('[data-auth]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); renderAuth(a.dataset.auth); }));
   $app.querySelector('#auth-form').addEventListener('submit', async (e) => {
     e.preventDefault();
